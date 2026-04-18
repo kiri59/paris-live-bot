@@ -4,7 +4,6 @@ import requests
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot
-from telegram.constants import ParseMode
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -184,7 +183,7 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
         niveau = "Signal exceptionnel"
         emoji = "🔴"
     elif score_final >= 75:
-        niveau = "Signal très fort"
+        niveau = "Signal tres fort"
         emoji = "🟢"
     else:
         niveau = "Signal fort"
@@ -220,17 +219,17 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
         f"📊 Stats football : {score_stats}/100\n"
         f"• Tirs totaux : {infos.get('tirs', 0)}\n"
         f"• xG total : {infos.get('xg', 0)}\n"
-        f"• xG restant estimé : {infos.get('xg_restant', 0)}\n"
+        f"• xG restant estime : {infos.get('xg_restant', 0)}\n"
         f"• Corners : {infos.get('corners', 0)}\n"
         f"———————————————\n"
         f"{money_emoji} Mouvement de cotes\n"
         f"{money_line}\n"
         f"• Cote over actuelle : {cote_info}\n"
         f"———————————————\n"
-        f"💰 Cote minimum conseillée : {cote_mini}\n"
-        f"📌 Marché : {marche}\n"
+        f"💰 Cote minimum conseillee : {cote_mini}\n"
+        f"📌 Marche : {marche}\n"
         f"———————————————\n"
-        f"Analyse générée à {datetime.now().strftime('%H:%M:%S')}"
+        f"Analyse generee a {datetime.now().strftime('%H:%M:%S')}"
     )
 
     await bot.send_message(chat_id=CHAT_ID, text=message)
@@ -263,31 +262,31 @@ async def verifier_resultats():
             if gagnant:
                 emoji_resultat = "✅"
                 verdict = "GAGNANT"
-                detail = f"But(s) marqué(s) après l'alerte — score final {score_final_home}-{score_final_away}"
+                detail = f"But(s) marque(s) apres l'alerte — score final {score_final_home}-{score_final_away}"
             else:
                 emoji_resultat = "❌"
                 verdict = "PERDANT"
-                detail = f"Aucun but après l'alerte — score final {score_final_home}-{score_final_away}"
+                detail = f"Aucun but apres l'alerte — score final {score_final_home}-{score_final_away}"
 
             message = (
-                f"{emoji_resultat} RÉSULTAT — {verdict}\n"
+                f"{emoji_resultat} RESULTAT — {verdict}\n"
                 f"———————————————\n"
                 f"⚽ {data['home']} vs {data['away']}\n"
                 f"🏆 {data['ligue']} ({data['pays']})\n"
                 f"———————————————\n"
-                f"📌 Alerte envoyée à {data['minute_alerte']}' ({data['heure_alerte']})\n"
+                f"📌 Alerte envoyee a {data['minute_alerte']}' ({data['heure_alerte']})\n"
                 f"🎯 Score de confiance : {data['score_final']}/100\n"
                 f"📊 {detail}\n"
                 f"———————————————\n"
-                f"Match terminé"
+                f"Match termine"
             )
 
             await bot.send_message(chat_id=CHAT_ID, text=message)
             a_supprimer.append(fixture_id)
-            print(f"  RÉSULTAT: {data['home']} vs {data['away']} — {verdict}")
+            print(f"  RESULTAT: {data['home']} vs {data['away']} — {verdict}")
 
         except Exception as e:
-            print(f"Erreur résultat: {e}")
+            print(f"Erreur resultat: {e}")
             continue
 
     for fixture_id in a_supprimer:
@@ -329,11 +328,11 @@ async def analyser_matchs():
             print(f"Erreur: {e}")
             continue
 
-    print(f"  {len(matchs)} matchs analysés — {opportunites} alertes envoyées")
+    print(f"  {len(matchs)} matchs analyses — {opportunites} alertes envoyees")
     await verifier_resultats()
 
 async def main():
-    print("Bot Paris Live Football v7 démarré")
+    print("Bot Paris Live Football v7 demarre")
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
@@ -341,22 +340,25 @@ async def main():
                 "✅ Bot Paris Live Football v7\n"
                 "———————————————\n"
                 "🌍 Tous les championnats\n"
-                "⏱ Fenêtre : 80e — 92e minute\n"
-                "🎯 Scores jusqu'à 4-4\n"
+                "⏱ Fenetre : 80e — 92e minute\n"
+                "🎯 Scores jusqu'a 4-4\n"
                 "📊 Seuil : 70/100 minimum\n"
-                "⚡ Rafraîchissement : toutes les minutes\n"
-                "🏆 Résultats automatiques après chaque match\n"
+                "⚡ Rafraichissement : toutes les minutes\n"
+                "🏆 Resultats automatiques apres chaque match\n"
                 "———————————————\n"
                 "En surveillance..."
             )
         )
     except Exception as e:
-        print(f"Erreur message démarrage: {e} — bot continue quand même")
+        print(f"Erreur message demarrage: {e} — bot continue quand meme")
+
     scheduler.add_job(analyser_matchs, "interval", minutes=1)
     scheduler.start()
-    print("Scheduler démarré")
+    print("Scheduler demarre")
+
     while True:
         await asyncio.sleep(30)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Bot actif...")
 
 if __name__ == "__main__":
     asyncio.run(main())
