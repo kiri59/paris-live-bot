@@ -15,6 +15,14 @@ scheduler = AsyncIOScheduler()
 alertes_envoyees = set()
 historique_cotes = {}
 
+SCORES_SERRES = [
+    (0, 0), (1, 0), (0, 1), (1, 1),
+    (2, 0), (0, 2), (2, 1), (1, 2),
+    (2, 2), (3, 0), (0, 3), (3, 1),
+    (1, 3), (3, 2), (2, 3), (3, 3),
+    (4, 3), (3, 4), (4, 4)
+]
+
 def get_matchs_live():
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
@@ -117,7 +125,8 @@ def calculer_score_stats(fixture):
         ctx = 0
         if diff == 0: ctx += 0.5
         elif diff == 1: ctx += 0.35
-        if total_buts <= 1: ctx += 0.2
+        elif diff == 2: ctx += 0.2
+        if total_buts <= 2: ctx += 0.15
         ctx = min(ctx, 1)
         score += ctx * 30
 
@@ -151,11 +160,14 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
     ligue = fixture["league"]["name"]
     pays = fixture["league"]["country"]
 
-    if score_final >= 75:
+    if score_final >= 85:
+        niveau = "Signal exceptionnel"
+        emoji = "🔴"
+    elif score_final >= 75:
         niveau = "Signal très fort"
         emoji = "🟢"
     else:
-        niveau = "Signal modéré"
+        niveau = "Signal fort"
         emoji = "🟡"
 
     prob = score_final / 100
@@ -181,7 +193,7 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
         f"{emoji} *{niveau} — {score_final}/100*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"⚽ *{home} vs {away}*\n"
-        f"🕐 {minute}' — Score : {score_home}-{score_away}\n"
+        f"🕐 {minute}' — Score : {score_home}\\-{score_away}\n"
         f"🏆 {ligue} \\({pays}\\)\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📊 *Stats football : {score_stats}/100*\n"
@@ -206,7 +218,7 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
         parse_mode=ParseMode.MARKDOWN
     )
     alertes_envoyees.add(fixture_id)
-    print(f"  ALERTE envoyée: {home} vs {away} — {score_final}/100")
+    print(f"  ALERTE: {home} vs {away} — {score_final}/100")
 
 async def analyser_matchs():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Analyse en cours...")
@@ -216,7 +228,12 @@ async def analyser_matchs():
     for fixture in matchs:
         try:
             minute = fixture["fixture"]["status"]["elapsed"]
-            if not minute or minute < 60 or minute > 85:
+            if not minute or minute < 80 or minute > 92:
+                continue
+
+            score_home = fixture["goals"]["home"] or 0
+            score_away = fixture["goals"]["away"] or 0
+            if (score_home, score_away) not in SCORES_SERRES:
                 continue
 
             fixture_id = fixture["fixture"]["id"]
@@ -224,14 +241,14 @@ async def analyser_matchs():
                 continue
 
             score_stats, infos = calculer_score_stats(fixture)
-            if score_stats < 45:
+            if score_stats < 50:
                 continue
 
             cote_actuelle = get_cotes_live(fixture_id)
             mouvement, variation = analyser_mouvement_cotes(fixture_id, cote_actuelle)
             score_final = calculer_score_final(score_stats, mouvement)
 
-            if score_final >= 62:
+            if score_final >= 70:
                 await envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, variation, cote_actuelle)
                 opportunites += 1
 
@@ -242,17 +259,28 @@ async def analyser_matchs():
     print(f"  {len(matchs)} matchs analysés — {opportunites} alertes envoyées")
 
 async def main():
-    print("Bot Paris Live Football v3 démarré — Tous championnats")
+    print("Bot Paris Live Football v6 démarré")
     await bot.send_message(
         chat_id=CHAT_ID,
-        text="✅ *Bot Paris Live Football v3 démarré*\n🌍 Surveillance de TOUS les championnats disponibles\n📊 Signal double activé : stats \\+ mouvement de cotes\n🕐 Analyse toutes les 3 minutes entre la 60e et 85e minute",
+        text=(
+            "✅ *Bot Paris Live Football v6*\n"
+            "━━━━━━━━━━━━━━━\n"
+            "🌍 Tous les championnats\n"
+            "⏱️ Fenêtre : 80e — 92e minute\n"
+            "🎯 Scores jusqu'à 4\\-4\n"
+            "📊 Seuil : 70/100 minimum\n"
+            "⚡ Rafraîchissement : toutes les minutes\n"
+            "💰 Stats \\+ mouvement de cotes\n"
+            "━━━━━━━━━━━━━━━\n"
+            "_En surveillance\\.\\.\\._"
+        ),
         parse_mode=ParseMode.MARKDOWN
     )
-    scheduler.add_job(analyser_matchs, "interval", minutes=3)
+    scheduler.add_job(analyser_matchs, "interval", minutes=1)
     scheduler.start()
-    print("Scheduler démarré")
+    print("Scheduler démarré — analyse toutes les minutes")
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
 
 if __name__ == "__main__":
     asyncio.run(main())
