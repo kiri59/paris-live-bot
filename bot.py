@@ -15,14 +15,6 @@ scheduler = AsyncIOScheduler()
 alertes_envoyees = set()
 historique_cotes = {}
 
-LIGUES_IDS = [61, 39, 140, 135, 78, 2, 3]
-
-BOOKMAKERS = {
-    "winamax": "https://www.winamax.fr/paris-sportifs/sports/1",
-    "unibet": "https://www.unibet.fr/sport/football",
-    "pmu": "https://paris-sportifs.pmu.fr/pari-sportif/football",
-}
-
 def get_matchs_live():
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
@@ -34,7 +26,7 @@ def get_matchs_live():
     except:
         return []
 
-def get_cotes_live(fixture_id, home, away):
+def get_cotes_live(fixture_id):
     url = "https://v3.football.api-sports.io/odds/live"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"fixture": fixture_id}
@@ -56,20 +48,16 @@ def get_cotes_live(fixture_id, home, away):
 
 def analyser_mouvement_cotes(fixture_id, cote_actuelle):
     if cote_actuelle is None:
-        return None, 0
-
+        return "neutre", 0
     historique = historique_cotes.get(fixture_id, [])
     historique.append({"cote": cote_actuelle, "time": datetime.now()})
     if len(historique) > 10:
         historique = historique[-10:]
     historique_cotes[fixture_id] = historique
-
     if len(historique) < 2:
         return "neutre", 0
-
     premiere_cote = historique[0]["cote"]
     variation = ((cote_actuelle - premiere_cote) / premiere_cote) * 100
-
     if variation <= -8:
         return "fort", round(abs(variation), 1)
     elif variation <= -4:
@@ -88,7 +76,7 @@ def calculer_score_stats(fixture):
         diff = abs(score_home - score_away)
         total_buts = score_home + score_away
 
-        tirs_home = tirs_away = tirs_cadres_home = tirs_cadres_away = 0
+        tirs_home = tirs_away = 0
         corners_home = corners_away = 0
         xg_home = xg_away = 0.0
 
@@ -106,19 +94,15 @@ def calculer_score_stats(fixture):
                 if t == "Total Shots":
                     if is_home: tirs_home = val
                     else: tirs_away = val
-                elif t == "Shots on Goal":
-                    if is_home: tirs_cadres_home = val
-                    else: tirs_cadres_away = val
                 elif t == "Corner Kicks":
                     if is_home: corners_home = val
                     else: corners_away = val
-                elif t == "expected_goals" or t == "Expected Goals":
+                elif t in ["expected_goals", "Expected Goals"]:
                     if is_home: xg_home = val
                     else: xg_away = val
 
         score = 0
         minutes_restantes = max(90 - minute, 1)
-
         tirs_totaux = tirs_home + tirs_away
         rythme = (tirs_totaux / max(minute, 1)) * 90
         score += min(rythme / 25, 1) * 25
@@ -147,17 +131,14 @@ def calculer_score_stats(fixture):
             "score_away": score_away,
             "diff": diff
         }
-    except Exception as e:
+    except:
         return 0, {}
 
-def calculer_score_final(score_stats, mouvement_cotes):
+def calculer_score_final(score_stats, mouvement):
     bonus = 0
-    if mouvement_cotes == "fort":
-        bonus = 15
-    elif mouvement_cotes == "modere":
-        bonus = 8
-    elif mouvement_cotes == "contre":
-        bonus = -15
+    if mouvement == "fort": bonus = 15
+    elif mouvement == "modere": bonus = 8
+    elif mouvement == "contre": bonus = -15
     return min(round(score_stats + bonus), 100)
 
 async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, variation, cote_actuelle):
@@ -173,7 +154,7 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
     if score_final >= 75:
         niveau = "Signal très fort"
         emoji = "🟢"
-    elif score_final >= 62:
+    else:
         niveau = "Signal modéré"
         emoji = "🟡"
 
@@ -194,13 +175,14 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
         money_emoji = "➡️"
 
     cote_info = f"{cote_actuelle}" if cote_actuelle else "N/A"
+    marche = f"Over {score_home + score_away + 0.5} buts"
 
     message = (
         f"{emoji} *{niveau} — {score_final}/100*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"⚽ *{home} vs {away}*\n"
         f"🕐 {minute}' — Score : {score_home}-{score_away}\n"
-        f"🏆 {ligue} ({pays})\n"
+        f"🏆 {ligue} \\({pays}\\)\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📊 *Stats football : {score_stats}/100*\n"
         f"• Tirs totaux : {infos.get('tirs', 0)}\n"
@@ -210,10 +192,10 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
         f"━━━━━━━━━━━━━━━\n"
         f"{money_emoji} *Mouvement de cotes*\n"
         f"{money_line}\n"
-        f"• Cote over {score_home + score_away + 0.5} actuelle : {cote_info}\n"
+        f"• Cote over actuelle : {cote_info}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"💰 *Cote minimum conseillée : {cote_mini}*\n"
-        f"📌 Marché : Over {score_home + score_away + 0.5} buts\n"
+        f"📌 Marché : {marche}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"_Analyse générée à {datetime.now().strftime('%H:%M:%S')}_"
     )
@@ -224,6 +206,7 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
         parse_mode=ParseMode.MARKDOWN
     )
     alertes_envoyees.add(fixture_id)
+    print(f"  ALERTE envoyée: {home} vs {away} — {score_final}/100")
 
 async def analyser_matchs():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Analyse en cours...")
@@ -232,10 +215,6 @@ async def analyser_matchs():
 
     for fixture in matchs:
         try:
-            ligue_id = fixture["league"]["id"]
-            if ligue_id not in LIGUES_IDS:
-                continue
-
             minute = fixture["fixture"]["status"]["elapsed"]
             if not minute or minute < 60 or minute > 85:
                 continue
@@ -248,33 +227,30 @@ async def analyser_matchs():
             if score_stats < 45:
                 continue
 
-            home = fixture["teams"]["home"]["name"]
-            away = fixture["teams"]["away"]["name"]
-            cote_actuelle = get_cotes_live(fixture_id, home, away)
+            cote_actuelle = get_cotes_live(fixture_id)
             mouvement, variation = analyser_mouvement_cotes(fixture_id, cote_actuelle)
             score_final = calculer_score_final(score_stats, mouvement)
 
             if score_final >= 62:
                 await envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, variation, cote_actuelle)
                 opportunites += 1
-                print(f"  ALERTE: {home} vs {away} — Stats {score_stats} — Cotes {mouvement} — Final {score_final}/100")
 
         except Exception as e:
-            print(f"Erreur sur un match: {e}")
+            print(f"Erreur: {e}")
             continue
 
     print(f"  {len(matchs)} matchs analysés — {opportunites} alertes envoyées")
 
 async def main():
-    print("Bot Paris Live Football démarré")
+    print("Bot Paris Live Football v3 démarré — Tous championnats")
     await bot.send_message(
         chat_id=CHAT_ID,
-        text="✅ *Bot Paris Live Football v2 démarré*\nSignal double activé : stats football + mouvement de cotes live\nSurveillance entre la 60e et 85e minute sur tous les championnats.",
+        text="✅ *Bot Paris Live Football v3 démarré*\n🌍 Surveillance de TOUS les championnats disponibles\n📊 Signal double activé : stats \\+ mouvement de cotes\n🕐 Analyse toutes les 3 minutes entre la 60e et 85e minute",
         parse_mode=ParseMode.MARKDOWN
     )
     scheduler.add_job(analyser_matchs, "interval", minutes=3)
     scheduler.start()
-    print("Scheduler démarré — analyse toutes les 3 minutes")
+    print("Scheduler démarré")
     while True:
         await asyncio.sleep(60)
 
