@@ -194,16 +194,16 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
     cote_mini = round(1 / prob, 2) if prob > 0.05 else 0
 
     if mouvement == "fort":
-        money_line = f"📉 Chute de cote -{variation}% — argent massif sur over"
+        money_line = f"Chute de cote -{variation}% — argent massif sur over"
         money_emoji = "🔥"
     elif mouvement == "modere":
-        money_line = f"📉 Chute de cote -{variation}% — signal money flow"
+        money_line = f"Chute de cote -{variation}% — signal money flow"
         money_emoji = "📊"
     elif mouvement == "contre":
-        money_line = f"📈 Hausse de cote +{variation}% — argent contre"
+        money_line = f"Hausse de cote +{variation}% — argent contre"
         money_emoji = "⚠️"
     else:
-        money_line = "➡️ Cote stable — pas de signal money flow"
+        money_line = "Cote stable — pas de signal money flow"
         money_emoji = "➡️"
 
     cote_info = f"{cote_actuelle}" if cote_actuelle else "N/A"
@@ -211,33 +211,29 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
     buts_au_moment = score_home + score_away
 
     message = (
-        f"{emoji} *{niveau} — {score_final}/100*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"⚽ *{home} vs {away}*\n"
-        f"🕐 {minute}' — Score : {score_home}\\-{score_away}\n"
-        f"🏆 {ligue} \\({pays}\\)\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📊 *Stats football : {score_stats}/100*\n"
+        f"{emoji} {niveau} — {score_final}/100\n"
+        f"———————————————\n"
+        f"⚽ {home} vs {away}\n"
+        f"🕐 {minute}' — Score : {score_home}-{score_away}\n"
+        f"🏆 {ligue} ({pays})\n"
+        f"———————————————\n"
+        f"📊 Stats football : {score_stats}/100\n"
         f"• Tirs totaux : {infos.get('tirs', 0)}\n"
         f"• xG total : {infos.get('xg', 0)}\n"
         f"• xG restant estimé : {infos.get('xg_restant', 0)}\n"
         f"• Corners : {infos.get('corners', 0)}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"{money_emoji} *Mouvement de cotes*\n"
+        f"———————————————\n"
+        f"{money_emoji} Mouvement de cotes\n"
         f"{money_line}\n"
         f"• Cote over actuelle : {cote_info}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💰 *Cote minimum conseillée : {cote_mini}*\n"
+        f"———————————————\n"
+        f"💰 Cote minimum conseillée : {cote_mini}\n"
         f"📌 Marché : {marche}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"_Analyse générée à {datetime.now().strftime('%H:%M:%S')}_"
+        f"———————————————\n"
+        f"Analyse générée à {datetime.now().strftime('%H:%M:%S')}"
     )
 
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=message,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await bot.send_message(chat_id=CHAT_ID, text=message)
 
     alertes_envoyees[fixture_id] = {
         "home": home,
@@ -253,12 +249,11 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
 
 async def verifier_resultats():
     a_supprimer = []
-    for fixture_id, data in alertes_envoyees.items():
+    for fixture_id, data in list(alertes_envoyees.items()):
         try:
             resultat = get_match_termine(fixture_id)
             if resultat is None:
                 continue
-
             score_final_home = resultat["score_home"]
             score_final_away = resultat["score_away"]
             total_final = score_final_home + score_final_away
@@ -268,31 +263,26 @@ async def verifier_resultats():
             if gagnant:
                 emoji_resultat = "✅"
                 verdict = "GAGNANT"
-                detail = f"But\\(s\\) marqué\\(s\\) après l'alerte — score final {score_final_home}\\-{score_final_away}"
+                detail = f"But(s) marqué(s) après l'alerte — score final {score_final_home}-{score_final_away}"
             else:
                 emoji_resultat = "❌"
                 verdict = "PERDANT"
-                detail = f"Aucun but après l'alerte — score final {score_final_home}\\-{score_final_away}"
+                detail = f"Aucun but après l'alerte — score final {score_final_home}-{score_final_away}"
 
             message = (
-                f"{emoji_resultat} *RÉSULTAT — {verdict}*\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"⚽ *{data['home']} vs {data['away']}*\n"
-                f"🏆 {data['ligue']} \\({data['pays']}\\)\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"📌 Alerte envoyée à {data['minute_alerte']}' \\({data['heure_alerte']}\\)\n"
+                f"{emoji_resultat} RÉSULTAT — {verdict}\n"
+                f"———————————————\n"
+                f"⚽ {data['home']} vs {data['away']}\n"
+                f"🏆 {data['ligue']} ({data['pays']})\n"
+                f"———————————————\n"
+                f"📌 Alerte envoyée à {data['minute_alerte']}' ({data['heure_alerte']})\n"
                 f"🎯 Score de confiance : {data['score_final']}/100\n"
                 f"📊 {detail}\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"_Match terminé_"
+                f"———————————————\n"
+                f"Match terminé"
             )
 
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN
-            )
-
+            await bot.send_message(chat_id=CHAT_ID, text=message)
             a_supprimer.append(fixture_id)
             print(f"  RÉSULTAT: {data['home']} vs {data['away']} — {verdict}")
 
@@ -344,22 +334,24 @@ async def analyser_matchs():
 
 async def main():
     print("Bot Paris Live Football v7 démarré")
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=(
-            "✅ *Bot Paris Live Football v7*\n"
-            "━━━━━━━━━━━━━━━\n"
-            "🌍 Tous les championnats\n"
-            "⏱️ Fenêtre : 80e — 92e minute\n"
-            "🎯 Scores jusqu'à 4\\-4\n"
-            "📊 Seuil : 70/100 minimum\n"
-            "⚡ Rafraîchissement : toutes les minutes\n"
-            "🏆 Résultats automatiques après chaque match\n"
-            "━━━━━━━━━━━━━━━\n"
-            "_En surveillance\\.\\.\\._"
-        ),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                "✅ Bot Paris Live Football v7\n"
+                "———————————————\n"
+                "🌍 Tous les championnats\n"
+                "⏱ Fenêtre : 80e — 92e minute\n"
+                "🎯 Scores jusqu'à 4-4\n"
+                "📊 Seuil : 70/100 minimum\n"
+                "⚡ Rafraîchissement : toutes les minutes\n"
+                "🏆 Résultats automatiques après chaque match\n"
+                "———————————————\n"
+                "En surveillance..."
+            )
+        )
+    except Exception as e:
+        print(f"Erreur message démarrage: {e} — bot continue quand même")
     scheduler.add_job(analyser_matchs, "interval", minutes=1)
     scheduler.start()
     print("Scheduler démarré")
