@@ -13,8 +13,15 @@ API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY")
 bot = Bot(token=TELEGRAM_TOKEN)
 scheduler = AsyncIOScheduler()
 alertes_envoyees = set()
+historique_cotes = {}
 
 LIGUES_IDS = [61, 39, 140, 135, 78, 2, 3]
+
+BOOKMAKERS = {
+    "winamax": "https://www.winamax.fr/paris-sportifs/sports/1",
+    "unibet": "https://www.unibet.fr/sport/football",
+    "pmu": "https://paris-sportifs.pmu.fr/pari-sportif/football",
+}
 
 def get_matchs_live():
     url = "https://v3.football.api-sports.io/fixtures"
@@ -27,12 +34,50 @@ def get_matchs_live():
     except:
         return []
 
-def get_cotes_winamax(match_id, home, away):
+def get_cotes_live(fixture_id, home, away):
+    url = "https://v3.football.api-sports.io/odds/live"
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"fixture": fixture_id}
     try:
-        url = f"https://www.winamax.fr/paris-sportifs/sports/1/competitions"
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        data = r.json()
+        resultats = data.get("response", [])
+        if not resultats:
+            return None
+        for bookmaker in resultats[0].get("bookmakers", []):
+            for bet in bookmaker.get("bets", []):
+                if "Over/Under" in bet.get("name", ""):
+                    for val in bet.get("values", []):
+                        if val.get("value") == "Over 2.5":
+                            return float(val.get("odd", 0))
         return None
     except:
         return None
+
+def analyser_mouvement_cotes(fixture_id, cote_actuelle):
+    if cote_actuelle is None:
+        return None, 0
+
+    historique = historique_cotes.get(fixture_id, [])
+    historique.append({"cote": cote_actuelle, "time": datetime.now()})
+    if len(historique) > 10:
+        historique = historique[-10:]
+    historique_cotes[fixture_id] = historique
+
+    if len(historique) < 2:
+        return "neutre", 0
+
+    premiere_cote = historique[0]["cote"]
+    variation = ((cote_actuelle - premiere_cote) / premiere_cote) * 100
+
+    if variation <= -8:
+        return "fort", round(abs(variation), 1)
+    elif variation <= -4:
+        return "modere", round(abs(variation), 1)
+    elif variation >= 8:
+        return "contre", round(abs(variation), 1)
+    else:
+        return "neutre", round(abs(variation), 1)
 
 def calculer_score_stats(fixture):
     try:
@@ -105,7 +150,17 @@ def calculer_score_stats(fixture):
     except Exception as e:
         return 0, {}
 
-async def envoyer_alerte(fixture, score, infos):
+def calculer_score_final(score_stats, mouvement_cotes):
+    bonus = 0
+    if mouvement_cotes == "fort":
+        bonus = 15
+    elif mouvement_cotes == "modere":
+        bonus = 8
+    elif mouvement_cotes == "contre":
+        bonus = -15
+    return min(round(score_stats + bonus), 100)
+
+async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, variation, cote_actuelle):
     fixture_id = fixture["fixture"]["id"]
     home = fixture["teams"]["home"]["name"]
     away = fixture["teams"]["away"]["name"]
@@ -115,28 +170,47 @@ async def envoyer_alerte(fixture, score, infos):
     ligue = fixture["league"]["name"]
     pays = fixture["league"]["country"]
 
-    if score >= 70:
-        niveau = "Signal fort"
+    if score_final >= 75:
+        niveau = "Signal très fort"
         emoji = "🟢"
-    else:
+    elif score_final >= 62:
         niveau = "Signal modéré"
         emoji = "🟡"
 
-    prob = score / 100
+    prob = score_final / 100
     cote_mini = round(1 / prob, 2) if prob > 0.05 else 0
 
+    if mouvement == "fort":
+        money_line = f"📉 Chute de cote -{variation}% — argent massif sur over"
+        money_emoji = "🔥"
+    elif mouvement == "modere":
+        money_line = f"📉 Chute de cote -{variation}% — signal money flow"
+        money_emoji = "📊"
+    elif mouvement == "contre":
+        money_line = f"📈 Hausse de cote +{variation}% — argent contre"
+        money_emoji = "⚠️"
+    else:
+        money_line = "➡️ Cote stable — pas de signal money flow"
+        money_emoji = "➡️"
+
+    cote_info = f"{cote_actuelle}" if cote_actuelle else "N/A"
+
     message = (
-        f"{emoji} *{niveau} — {score}/100*\n"
+        f"{emoji} *{niveau} — {score_final}/100*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"⚽ *{home} vs {away}*\n"
         f"🕐 {minute}' — Score : {score_home}-{score_away}\n"
         f"🏆 {ligue} ({pays})\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📊 *Stats clés*\n"
+        f"📊 *Stats football : {score_stats}/100*\n"
         f"• Tirs totaux : {infos.get('tirs', 0)}\n"
         f"• xG total : {infos.get('xg', 0)}\n"
         f"• xG restant estimé : {infos.get('xg_restant', 0)}\n"
         f"• Corners : {infos.get('corners', 0)}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{money_emoji} *Mouvement de cotes*\n"
+        f"{money_line}\n"
+        f"• Cote over {score_home + score_away + 0.5} actuelle : {cote_info}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"💰 *Cote minimum conseillée : {cote_mini}*\n"
         f"📌 Marché : Over {score_home + score_away + 0.5} buts\n"
@@ -170,12 +244,20 @@ async def analyser_matchs():
             if fixture_id in alertes_envoyees:
                 continue
 
-            score, infos = calculer_score_stats(fixture)
+            score_stats, infos = calculer_score_stats(fixture)
+            if score_stats < 45:
+                continue
 
-            if score >= 62:
-                await envoyer_alerte(fixture, score, infos)
+            home = fixture["teams"]["home"]["name"]
+            away = fixture["teams"]["away"]["name"]
+            cote_actuelle = get_cotes_live(fixture_id, home, away)
+            mouvement, variation = analyser_mouvement_cotes(fixture_id, cote_actuelle)
+            score_final = calculer_score_final(score_stats, mouvement)
+
+            if score_final >= 62:
+                await envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, variation, cote_actuelle)
                 opportunites += 1
-                print(f"  ALERTE: {fixture['teams']['home']['name']} vs {fixture['teams']['away']['name']} — Score {score}/100")
+                print(f"  ALERTE: {home} vs {away} — Stats {score_stats} — Cotes {mouvement} — Final {score_final}/100")
 
         except Exception as e:
             print(f"Erreur sur un match: {e}")
@@ -187,7 +269,7 @@ async def main():
     print("Bot Paris Live Football démarré")
     await bot.send_message(
         chat_id=CHAT_ID,
-        text="✅ *Bot Paris Live Football démarré*\nJe surveille tous les matchs live et t'enverrai des alertes dès qu'une opportunité se présente entre la 60e et 85e minute.",
+        text="✅ *Bot Paris Live Football v2 démarré*\nSignal double activé : stats football + mouvement de cotes live\nSurveillance entre la 60e et 85e minute sur tous les championnats.",
         parse_mode=ParseMode.MARKDOWN
     )
     scheduler.add_job(analyser_matchs, "interval", minutes=3)
