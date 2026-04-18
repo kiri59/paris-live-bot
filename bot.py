@@ -4,10 +4,21 @@ import requests
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot
+from flask import Flask
+from threading import Thread
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY")
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot Paris Live Football actif"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 scheduler = AsyncIOScheduler()
@@ -332,12 +343,13 @@ async def analyser_matchs():
     await verifier_resultats()
 
 async def main():
-    print("Bot Paris Live Football v7 demarre")
+    print("Bot Paris Live Football v8 demarre")
+    Thread(target=run_flask).start()
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                "✅ Bot Paris Live Football v7\n"
+                "✅ Bot Paris Live Football v8\n"
                 "———————————————\n"
                 "🌍 Tous les championnats\n"
                 "⏱ Fenetre : 80e — 92e minute\n"
@@ -345,6 +357,7 @@ async def main():
                 "📊 Seuil : 70/100 minimum\n"
                 "⚡ Rafraichissement : toutes les minutes\n"
                 "🏆 Resultats automatiques apres chaque match\n"
+                "🔒 Serveur anti-sleep actif\n"
                 "———————————————\n"
                 "En surveillance..."
             )
