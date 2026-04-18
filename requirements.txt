@@ -3,3 +3,4 @@ requests==2.31.0
 beautifulsoup4==4.12.2
 aiohttp==3.9.1
 apscheduler==3.10.4
+flask==3.0.0
