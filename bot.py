@@ -22,6 +22,10 @@ SCORES_SERRES = [
     (4, 3), (3, 4), (4, 4)
 ]
 
+def est_heure_matchs():
+    heure = datetime.now().hour
+    return 17 <= heure <= 23
+
 def get_matchs_live():
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
@@ -287,9 +291,14 @@ async def verifier_resultats():
         del alertes_envoyees[fixture_id]
 
 async def analyser_matchs():
+    if not est_heure_matchs():
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Hors horaire — pas d'analyse")
+        return
+
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Analyse en cours...")
     matchs = get_matchs_live()
     opportunites = 0
+
     for fixture in matchs:
         try:
             minute = fixture["fixture"]["status"]["elapsed"]
@@ -314,22 +323,24 @@ async def analyser_matchs():
         except Exception as e:
             print(f"Erreur: {e}")
             continue
+
     print(f"  {len(matchs)} matchs analyses — {opportunites} alertes envoyees")
     await verifier_resultats()
 
 async def main():
-    print("Bot Paris Live Football v10 demarre")
+    print("Bot Paris Live Football v11 demarre")
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                "✅ Bot Paris Live Football v10\n"
+                "✅ Bot Paris Live Football v11\n"
                 "———————————————\n"
                 "🌍 Tous les championnats\n"
                 "⏱ Fenetre : 80e — 92e minute\n"
                 "🎯 Scores jusqu'a 4-4\n"
                 "📊 Seuil : 70/100 minimum\n"
-                "⚡ Rafraichissement : toutes les minutes\n"
+                "⚡ Analyse toutes les 2 minutes\n"
+                "🕐 Actif entre 17h et 23h\n"
                 "🏆 Resultats automatiques apres chaque match\n"
                 "———————————————\n"
                 "En surveillance..."
@@ -337,11 +348,13 @@ async def main():
         )
     except Exception as e:
         print(f"Erreur message demarrage: {e} — bot continue quand meme")
-    scheduler.add_job(analyser_matchs, "interval", minutes=1)
+
+    scheduler.add_job(analyser_matchs, "interval", minutes=2)
     scheduler.start()
-    print("Scheduler demarre")
+    print("Scheduler demarre — analyse toutes les 2 minutes entre 17h et 23h")
+
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Bot actif...")
 
 if __name__ == "__main__":
