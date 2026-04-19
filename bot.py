@@ -18,7 +18,7 @@ def home():
     return "Bot Paris Live Football actif"
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080, use_reloader=False, debug=False)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 scheduler = AsyncIOScheduler()
@@ -244,7 +244,6 @@ async def envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, va
     )
 
     await bot.send_message(chat_id=CHAT_ID, text=message)
-
     alertes_envoyees[fixture_id] = {
         "home": home,
         "away": away,
@@ -269,7 +268,6 @@ async def verifier_resultats():
             total_final = score_final_home + score_final_away
             buts_apres = total_final - data["buts_au_moment"]
             gagnant = buts_apres > 0
-
             if gagnant:
                 emoji_resultat = "✅"
                 verdict = "GAGNANT"
@@ -278,7 +276,6 @@ async def verifier_resultats():
                 emoji_resultat = "❌"
                 verdict = "PERDANT"
                 detail = f"Aucun but apres l'alerte — score final {score_final_home}-{score_final_away}"
-
             message = (
                 f"{emoji_resultat} RESULTAT — {verdict}\n"
                 f"———————————————\n"
@@ -291,15 +288,12 @@ async def verifier_resultats():
                 f"———————————————\n"
                 f"Match termine"
             )
-
             await bot.send_message(chat_id=CHAT_ID, text=message)
             a_supprimer.append(fixture_id)
             print(f"  RESULTAT: {data['home']} vs {data['away']} — {verdict}")
-
         except Exception as e:
             print(f"Erreur resultat: {e}")
             continue
-
     for fixture_id in a_supprimer:
         del alertes_envoyees[fixture_id]
 
@@ -307,49 +301,43 @@ async def analyser_matchs():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Analyse en cours...")
     matchs = get_matchs_live()
     opportunites = 0
-
     for fixture in matchs:
         try:
             minute = fixture["fixture"]["status"]["elapsed"]
             if not minute or minute < 80 or minute > 92:
                 continue
-
             score_home = fixture["goals"]["home"] or 0
             score_away = fixture["goals"]["away"] or 0
             if (score_home, score_away) not in SCORES_SERRES:
                 continue
-
             fixture_id = fixture["fixture"]["id"]
             if fixture_id in alertes_envoyees:
                 continue
-
             score_stats, infos = calculer_score_stats(fixture)
             if score_stats < 50:
                 continue
-
             cote_actuelle = get_cotes_live(fixture_id)
             mouvement, variation = analyser_mouvement_cotes(fixture_id, cote_actuelle)
             score_final = calculer_score_final(score_stats, mouvement)
-
             if score_final >= 70:
                 await envoyer_alerte(fixture, score_stats, score_final, infos, mouvement, variation, cote_actuelle)
                 opportunites += 1
-
         except Exception as e:
             print(f"Erreur: {e}")
             continue
-
     print(f"  {len(matchs)} matchs analyses — {opportunites} alertes envoyees")
     await verifier_resultats()
 
 async def main():
-    print("Bot Paris Live Football v8 demarre")
-    Thread(target=run_flask).start()
+    print("Bot Paris Live Football v9 demarre")
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("Serveur Flask demarre en arriere-plan")
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                "✅ Bot Paris Live Football v8\n"
+                "✅ Bot Paris Live Football v9\n"
                 "———————————————\n"
                 "🌍 Tous les championnats\n"
                 "⏱ Fenetre : 80e — 92e minute\n"
@@ -357,18 +345,16 @@ async def main():
                 "📊 Seuil : 70/100 minimum\n"
                 "⚡ Rafraichissement : toutes les minutes\n"
                 "🏆 Resultats automatiques apres chaque match\n"
-                "🔒 Serveur anti-sleep actif\n"
+                "🔒 Anti-sleep actif\n"
                 "———————————————\n"
                 "En surveillance..."
             )
         )
     except Exception as e:
         print(f"Erreur message demarrage: {e} — bot continue quand meme")
-
     scheduler.add_job(analyser_matchs, "interval", minutes=1)
     scheduler.start()
     print("Scheduler demarre")
-
     while True:
         await asyncio.sleep(30)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Bot actif...")
