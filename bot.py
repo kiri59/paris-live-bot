@@ -13,9 +13,16 @@ API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY")
 bot = Bot(token=TELEGRAM_TOKEN)
 scheduler = AsyncIOScheduler()
 alertes_envoyees = set()
-historique_cotes = {}
+snapshots_match = {}
+historique_resultats = {}
 
 TIMEZONE_FR = pytz.timezone("Europe/Paris")
+
+LIGUES_AUTORISEES = [
+    61, 39, 40, 140, 141, 135, 78, 79,
+    144, 71, 172, 292, 210, 119, 179,
+    103, 88, 94, 113, 203
+]
 
 def heure_france():
     return datetime.now(TIMEZONE_FR)
@@ -74,18 +81,15 @@ def get_cotes_live(fixture_id):
     except:
         return None
 
-def analyser_stats(fixture):
+def extraire_stats(fixture):
     try:
         stats = fixture.get("statistics", [])
         minute = fixture["fixture"]["status"]["elapsed"] or 0
         score_home = fixture["goals"]["home"] or 0
         score_away = fixture["goals"]["away"] or 0
-        diff = score_home - score_away
 
-        tirs_home = tirs_away = 0
         corners_home = corners_away = 0
         xg_home = xg_away = 0.0
-        poss_home = poss_away = 50.0
 
         for team_stats in stats:
             is_home = team_stats["team"]["id"] == fixture["teams"]["home"]["id"]
@@ -98,89 +102,71 @@ def analyser_stats(fixture):
                 except:
                     val = 0
                 t = s["type"]
-                if t == "Total Shots":
-                    if is_home: tirs_home = val
-                    else: tirs_away = val
-                elif t == "Corner Kicks":
+                if t == "Corner Kicks":
                     if is_home: corners_home = val
                     else: corners_away = val
                 elif t in ["expected_goals", "Expected Goals"]:
                     if is_home: xg_home = val
                     else: xg_away = val
-                elif t == "Ball Possession":
-                    if is_home: poss_home = val
-                    else: poss_away = val
 
         return {
             "minute": minute,
             "score_home": score_home,
             "score_away": score_away,
-            "diff": diff,
-            "tirs_home": int(tirs_home),
-            "tirs_away": int(tirs_away),
-            "corners_home": int(corners_home),
-            "corners_away": int(corners_away),
             "xg_home": round(xg_home, 2),
             "xg_away": round(xg_away, 2),
-            "poss_home": round(poss_home),
-            "poss_away": round(poss_away),
-            "tirs_total": int(tirs_home + tirs_away),
-            "corners_total": int(corners_home + corners_away),
-            "xg_total": round(xg_home + xg_away, 2)
+            "xg_total": round(xg_home + xg_away, 2),
+            "corners_home": int(corners_home),
+            "corners_away": int(corners_away),
+            "corners_total": int(corners_home + corners_away)
         }
     except:
         return None
 
-def detecter_situation(stats, home, away):
-    if not stats:
-        return None, None
+def calculer_intensite_recente(fixture_id, stats_actuelles):
+    if fixture_id not in snapshots_match:
+        snapshots_match[fixture_id] = stats_actuelles
+        return None
 
-    minute = stats["minute"]
-    diff = stats["diff"]
-    score_home = stats["score_home"]
-    score_away = stats["score_away"]
-    tirs_total = stats["tirs_total"]
-    corners_total = stats["corners_total"]
-    xg_total = stats["xg_total"]
-    poss_home = stats["poss_home"]
-    poss_away = stats["poss_away"]
+    snapshot = snapshots_match[fixture_id]
+    delta_xg_home = stats_actuelles["xg_home"] - snapshot["xg_home"]
+    delta_xg_away = stats_actuelles["xg_away"] - snapshot["xg_away"]
+    delta_xg_total = stats_actuelles["xg_total"] - snapshot["xg_total"]
+    delta_corners = stats_actuelles["corners_total"] - snapshot["corners_total"]
+    delta_minute = stats_actuelles["minute"] - snapshot["minute"]
 
-    signaux = []
-    situation = None
+    snapshots_match[fixture_id] = stats_actuelles
 
-    # Equipe qui perd et qui pousse
-    if diff < 0 and poss_home >= 60 and tirs_total >= 15:
-        signaux.append(f"{home} perd et domine le jeu ({poss_home}% possession, {stats['tirs_home']} tirs)")
-        situation = f"{home} pousse pour revenir au score"
-    elif diff > 0 and poss_away >= 60 and tirs_total >= 15:
-        signaux.append(f"{away} perd et domine le jeu ({poss_away}% possession, {stats['tirs_away']} tirs)")
-        situation = f"{away} pousse pour revenir au score"
+    return {
+        "delta_xg_home": round(delta_xg_home, 2),
+        "delta_xg_away": round(delta_xg_away, 2),
+        "delta_xg_total": round(delta_xg_total, 2),
+        "delta_corners": delta_corners,
+        "delta_minute": delta_minute
+    }
 
-    # Match nul avec forte pression
-    elif diff == 0 and tirs_total >= 18 and corners_total >= 8:
-        signaux.append(f"Match nul tendu avec forte pression ({tirs_total} tirs, {corners_total} corners)")
-        situation = "Match ouvert — les deux equipes cherchent le but"
+def detecter_value_bet(stats, intensite, home, away):
+    if not intensite:
+        return None
+    if intensite["delta_minute"] < 1:
+        return None
 
-    # xG eleve en fin de match
-    elif xg_total >= 2.5 and tirs_total >= 20:
-        signaux.append(f"Pression offensive intense (xG {xg_total}, {tirs_total} tirs)")
-        situation = "Match a haute intensite offensive"
+    delta_xg_home = intensite["delta_xg_home"]
+    delta_xg_away = intensite["delta_xg_away"]
+    delta_xg_total = intensite["delta_xg_total"]
+    delta_corners = intensite["delta_corners"]
 
-    # Equipe qui gagne et continue de pousser
-    elif abs(diff) == 1 and tirs_total >= 16 and corners_total >= 7:
-        if diff > 0:
-            signaux.append(f"{home} mene et continue de dominer ({poss_home}% possession)")
-            situation = f"{home} cherche a tuer le match"
-        else:
-            signaux.append(f"{away} mene et continue de dominer ({poss_away}% possession)")
-            situation = f"{away} cherche a tuer le match"
+    if delta_xg_home >= 0.2:
+        return f"{home} pousse fort (xG +{delta_xg_home} en {intensite['delta_minute']}min)"
+    if delta_xg_away >= 0.2:
+        return f"{away} pousse fort (xG +{delta_xg_away} en {intensite['delta_minute']}min)"
+    if delta_xg_total >= 0.25 and delta_corners >= 2:
+        return f"Match qui s'emballe (xG +{delta_xg_total}, {delta_corners} corners en {intensite['delta_minute']}min)"
+    if delta_corners >= 3:
+        return f"Pression continue ({delta_corners} corners en {intensite['delta_minute']}min)"
+    return None
 
-    if not signaux:
-        return None, None
-
-    return situation, signaux
-
-async def envoyer_alerte(fixture, stats, situation, signaux, cote_actuelle):
+async def envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle):
     fixture_id = fixture["fixture"]["id"]
     home = fixture["teams"]["home"]["name"]
     away = fixture["teams"]["away"]["name"]
@@ -203,11 +189,9 @@ async def envoyer_alerte(fixture, stats, situation, signaux, cote_actuelle):
         f"———————————————\n"
         f"📋 Situation : {situation}\n"
         f"———————————————\n"
-        f"📊 Stats live\n"
-        f"• Tirs : {home} {stats['tirs_home']} — {stats['tirs_away']} {away}\n"
-        f"• Corners : {stats['corners_home']} — {stats['corners_away']}\n"
-        f"• xG : {stats['xg_home']} — {stats['xg_away']}\n"
-        f"• Possession : {stats['poss_home']}% — {stats['poss_away']}%\n"
+        f"📊 Intensite des {intensite['delta_minute']} dernieres minutes\n"
+        f"• xG genere : {home} +{intensite['delta_xg_home']} | {away} +{intensite['delta_xg_away']}\n"
+        f"• Nouveaux corners : {intensite['delta_corners']}\n"
         f"———————————————\n"
         f"💰 Marche conseille : {marche}\n"
         f"📈 Cote actuelle : {cote_info}\n"
@@ -216,14 +200,20 @@ async def envoyer_alerte(fixture, stats, situation, signaux, cote_actuelle):
     )
 
     await bot.send_message(chat_id=CHAT_ID, text=message)
+
+    historique_resultats[fixture_id] = {
+        "home": home,
+        "away": away,
+        "ligue": ligue,
+        "buts_au_moment": score_home + score_away
+    }
+
     alertes_envoyees.add(fixture_id)
     print(f"  VALUE BET: {home} vs {away} — {situation}")
 
 async def verifier_resultats():
     a_supprimer = []
-    for fixture_id, data in list(historique_cotes.items()):
-        if "buts_au_moment" not in data:
-            continue
+    for fixture_id, data in list(historique_resultats.items()):
         try:
             resultat = get_match_termine(fixture_id)
             if resultat is None:
@@ -258,8 +248,8 @@ async def verifier_resultats():
             print(f"Erreur resultat: {e}")
             continue
     for fixture_id in a_supprimer:
-        if fixture_id in historique_cotes:
-            del historique_cotes[fixture_id]
+        if fixture_id in historique_resultats:
+            del historique_resultats[fixture_id]
 
 async def analyser_matchs():
     if not est_heure_matchs():
@@ -268,9 +258,10 @@ async def analyser_matchs():
 
     print(f"[{heure_france().strftime('%H:%M:%S')}] Analyse en cours...")
     matchs = get_matchs_live()
+    matchs_filtres = [m for m in matchs if m["league"]["id"] in LIGUES_AUTORISEES]
     opportunites = 0
 
-    for fixture in matchs:
+    for fixture in matchs_filtres:
         try:
             minute = fixture["fixture"]["status"]["elapsed"]
             if not minute or minute < 80 or minute > 92:
@@ -283,45 +274,41 @@ async def analyser_matchs():
             home = fixture["teams"]["home"]["name"]
             away = fixture["teams"]["away"]["name"]
 
-            stats = analyser_stats(fixture)
+            stats = extraire_stats(fixture)
             if not stats:
                 continue
 
-            situation, signaux = detecter_situation(stats, home, away)
+            intensite = calculer_intensite_recente(fixture_id, stats)
+            if not intensite:
+                continue
+
+            situation = detecter_value_bet(stats, intensite, home, away)
             if not situation:
                 continue
 
             cote_actuelle = get_cotes_live(fixture_id)
-
-            historique_cotes[fixture_id] = {
-                "home": home,
-                "away": away,
-                "ligue": fixture["league"]["name"],
-                "buts_au_moment": stats["score_home"] + stats["score_away"]
-            }
-
-            await envoyer_alerte(fixture, stats, situation, signaux, cote_actuelle)
+            await envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle)
             opportunites += 1
 
         except Exception as e:
             print(f"Erreur: {e}")
             continue
 
-    print(f"  {len(matchs)} matchs analyses — {opportunites} value bets detectes")
+    print(f"  {len(matchs)} matchs live ({len(matchs_filtres)} dans nos ligues) — {opportunites} value bets")
     await verifier_resultats()
 
 async def main():
-    print("Bot Paris Live Football v12 demarre")
+    print("Bot Paris Live Football v14 demarre")
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                "✅ Bot Paris Live Football v12\n"
+                "✅ Bot Paris Live Football v14\n"
                 "———————————————\n"
-                "🌍 Tous les championnats\n"
+                "🌍 20 championnats selectionnes\n"
                 "⏱ Fenetre : 80e — 92e minute\n"
-                "⚡ Value bets — 1 but a venir\n"
-                "📊 Analyse par situation tactique\n"
+                "⚡ Detection par intensite recente\n"
+                "📊 Seuil : 0.2 xG en 2 min\n"
                 "🕐 Actif 12h-23h heure francaise\n"
                 "🏆 Resultats automatiques\n"
                 "———————————————\n"
@@ -333,7 +320,7 @@ async def main():
 
     scheduler.add_job(analyser_matchs, "interval", minutes=2)
     scheduler.start()
-    print("Scheduler demarre — heure FR active")
+    print("Scheduler demarre — 20 ligues actives")
 
     while True:
         await asyncio.sleep(60)
