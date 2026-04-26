@@ -84,12 +84,16 @@ def get_cotes_live(fixture_id):
 def extraire_stats(fixture):
     try:
         stats = fixture.get("statistics", [])
+        events = fixture.get("events", [])
         minute = fixture["fixture"]["status"]["elapsed"] or 0
         score_home = fixture["goals"]["home"] or 0
         score_away = fixture["goals"]["away"] or 0
 
         corners_home = corners_away = 0
         xg_home = xg_away = 0.0
+        tirs_surface_home = tirs_surface_away = 0
+        poss_home = poss_away = 50.0
+        substitutions_home_offensives = substitutions_away_offensives = 0
 
         for team_stats in stats:
             is_home = team_stats["team"]["id"] == fixture["teams"]["home"]["id"]
@@ -108,17 +112,40 @@ def extraire_stats(fixture):
                 elif t in ["expected_goals", "Expected Goals"]:
                     if is_home: xg_home = val
                     else: xg_away = val
+                elif t == "Shots insidebox":
+                    if is_home: tirs_surface_home = val
+                    else: tirs_surface_away = val
+                elif t == "Ball Possession":
+                    if is_home: poss_home = val
+                    else: poss_away = val
+
+        # Compter les remplacements offensifs récents (après 70e)
+        for event in events:
+            if event.get("type") == "subst" and event.get("time", {}).get("elapsed", 0) >= 70:
+                team_id = event.get("team", {}).get("id")
+                if team_id == fixture["teams"]["home"]["id"]:
+                    substitutions_home_offensives += 1
+                else:
+                    substitutions_away_offensives += 1
 
         return {
             "minute": minute,
             "score_home": score_home,
             "score_away": score_away,
+            "diff": score_home - score_away,
             "xg_home": round(xg_home, 2),
             "xg_away": round(xg_away, 2),
             "xg_total": round(xg_home + xg_away, 2),
             "corners_home": int(corners_home),
             "corners_away": int(corners_away),
-            "corners_total": int(corners_home + corners_away)
+            "corners_total": int(corners_home + corners_away),
+            "tirs_surface_home": int(tirs_surface_home),
+            "tirs_surface_away": int(tirs_surface_away),
+            "tirs_surface_total": int(tirs_surface_home + tirs_surface_away),
+            "poss_home": round(poss_home),
+            "poss_away": round(poss_away),
+            "subs_home": substitutions_home_offensives,
+            "subs_away": substitutions_away_offensives
         }
     except:
         return None
@@ -129,44 +156,101 @@ def calculer_intensite_recente(fixture_id, stats_actuelles):
         return None
 
     snapshot = snapshots_match[fixture_id]
-    delta_xg_home = stats_actuelles["xg_home"] - snapshot["xg_home"]
-    delta_xg_away = stats_actuelles["xg_away"] - snapshot["xg_away"]
-    delta_xg_total = stats_actuelles["xg_total"] - snapshot["xg_total"]
-    delta_corners = stats_actuelles["corners_total"] - snapshot["corners_total"]
-    delta_minute = stats_actuelles["minute"] - snapshot["minute"]
-
-    snapshots_match[fixture_id] = stats_actuelles
-
-    return {
-        "delta_xg_home": round(delta_xg_home, 2),
-        "delta_xg_away": round(delta_xg_away, 2),
-        "delta_xg_total": round(delta_xg_total, 2),
-        "delta_corners": delta_corners,
-        "delta_minute": delta_minute
+    delta = {
+        "delta_xg_home": round(stats_actuelles["xg_home"] - snapshot["xg_home"], 2),
+        "delta_xg_away": round(stats_actuelles["xg_away"] - snapshot["xg_away"], 2),
+        "delta_xg_total": round(stats_actuelles["xg_total"] - snapshot["xg_total"], 2),
+        "delta_corners": stats_actuelles["corners_total"] - snapshot["corners_total"],
+        "delta_tirs_surface": stats_actuelles["tirs_surface_total"] - snapshot["tirs_surface_total"],
+        "delta_minute": stats_actuelles["minute"] - snapshot["minute"]
     }
 
-def detecter_value_bet(stats, intensite, home, away):
-    if not intensite:
-        return None
-    if intensite["delta_minute"] < 1:
-        return None
+    snapshots_match[fixture_id] = stats_actuelles
+    return delta
 
-    delta_xg_home = intensite["delta_xg_home"]
-    delta_xg_away = intensite["delta_xg_away"]
-    delta_xg_total = intensite["delta_xg_total"]
-    delta_corners = intensite["delta_corners"]
+def calculer_score_value_bet(stats, intensite, home, away):
+    """Calcule un score de 0 à 100 basé sur 7 critères"""
+    if not intensite or intensite["delta_minute"] < 1:
+        return 0, []
 
-    if delta_xg_home >= 0.2:
-        return f"{home} pousse fort (xG +{delta_xg_home} en {intensite['delta_minute']}min)"
-    if delta_xg_away >= 0.2:
-        return f"{away} pousse fort (xG +{delta_xg_away} en {intensite['delta_minute']}min)"
-    if delta_xg_total >= 0.25 and delta_corners >= 2:
-        return f"Match qui s'emballe (xG +{delta_xg_total}, {delta_corners} corners en {intensite['delta_minute']}min)"
-    if delta_corners >= 3:
-        return f"Pression continue ({delta_corners} corners en {intensite['delta_minute']}min)"
-    return None
+    score = 0
+    raisons = []
 
-async def envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle):
+    # 1. xG récent — jusqu'à 25 points
+    delta_xg_max = max(intensite["delta_xg_home"], intensite["delta_xg_away"])
+    if delta_xg_max >= 0.3:
+        score += 25
+        raisons.append(f"xG explosif (+{delta_xg_max} en {intensite['delta_minute']}min)")
+    elif delta_xg_max >= 0.2:
+        score += 20
+        raisons.append(f"xG eleve (+{delta_xg_max} en {intensite['delta_minute']}min)")
+    elif delta_xg_max >= 0.15:
+        score += 12
+        raisons.append(f"xG present (+{delta_xg_max})")
+    elif intensite["delta_xg_total"] >= 0.2:
+        score += 10
+        raisons.append(f"xG cumule des deux equipes (+{intensite['delta_xg_total']})")
+
+    # 2. Tirs dans la surface récents — jusqu'à 20 points
+    delta_tirs_surface = intensite["delta_tirs_surface"]
+    if delta_tirs_surface >= 3:
+        score += 20
+        raisons.append(f"{delta_tirs_surface} tirs en surface en {intensite['delta_minute']}min")
+    elif delta_tirs_surface >= 2:
+        score += 15
+        raisons.append(f"{delta_tirs_surface} tirs en surface recents")
+    elif delta_tirs_surface >= 1:
+        score += 8
+        raisons.append(f"{delta_tirs_surface} tir en surface recent")
+
+    # 3. Score serré — jusqu'à 15 points
+    diff = abs(stats["diff"])
+    if diff == 0:
+        score += 15
+        raisons.append("Match nul tendu")
+    elif diff == 1:
+        score += 12
+        raisons.append("Ecart d'un seul but")
+    elif diff == 2:
+        score += 5
+
+    # 4. Équipe qui perd qui pousse — jusqu'à 15 points
+    if stats["diff"] < 0 and intensite["delta_xg_home"] >= 0.15:
+        score += 15
+        raisons.append(f"{home} perd et pousse pour revenir")
+    elif stats["diff"] > 0 and intensite["delta_xg_away"] >= 0.15:
+        score += 15
+        raisons.append(f"{away} perd et pousse pour revenir")
+
+    # 5. Possession dominante — jusqu'à 10 points
+    poss_max = max(stats["poss_home"], stats["poss_away"])
+    if poss_max >= 65:
+        score += 10
+        raisons.append(f"Possession dominante ({poss_max}%)")
+    elif poss_max >= 58:
+        score += 5
+
+    # 6. Corners récents — jusqu'à 10 points
+    if intensite["delta_corners"] >= 3:
+        score += 10
+        raisons.append(f"{intensite['delta_corners']} corners en {intensite['delta_minute']}min")
+    elif intensite["delta_corners"] >= 2:
+        score += 7
+        raisons.append(f"{intensite['delta_corners']} corners recents")
+    elif intensite["delta_corners"] >= 1:
+        score += 3
+
+    # 7. Bonus minute critique + remplacements offensifs — jusqu'à 5 points
+    if stats["minute"] >= 85:
+        score += 3
+        raisons.append("Minute critique (85e+)")
+    if stats["subs_home"] + stats["subs_away"] >= 2:
+        score += 2
+        raisons.append("Changements offensifs recents")
+
+    return min(score, 100), raisons
+
+async def envoyer_alerte(fixture, stats, intensite, score_value, raisons, cote_actuelle):
     fixture_id = fixture["fixture"]["id"]
     home = fixture["teams"]["home"]["name"]
     away = fixture["teams"]["away"]["name"]
@@ -176,22 +260,36 @@ async def envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle):
     ligue = fixture["league"]["name"]
     pays = fixture["league"]["country"]
 
+    if score_value >= 80:
+        niveau = "VALUE BET EXCEPTIONNEL"
+        emoji = "🔴"
+    elif score_value >= 70:
+        niveau = "VALUE BET FORT"
+        emoji = "🟢"
+    else:
+        niveau = "VALUE BET"
+        emoji = "🟡"
+
     cote_info = f"{cote_actuelle}" if cote_actuelle else "N/A"
     marche = f"Over {score_home + score_away + 0.5} buts"
     heure_fr = heure_france().strftime('%H:%M:%S')
 
+    raisons_text = "\n".join([f"• {r}" for r in raisons[:5]])
+
     message = (
-        f"⚡ VALUE BET — 1 BUT A VENIR\n"
+        f"{emoji} {niveau} — {score_value}/100\n"
         f"———————————————\n"
         f"⚽ {home} vs {away}\n"
         f"🕐 {minute}' — Score : {score_home}-{score_away}\n"
         f"🏆 {ligue} ({pays})\n"
         f"———————————————\n"
-        f"📋 Situation : {situation}\n"
+        f"📋 Signaux detectes\n"
+        f"{raisons_text}\n"
         f"———————————————\n"
-        f"📊 Intensite des {intensite['delta_minute']} dernieres minutes\n"
-        f"• xG genere : {home} +{intensite['delta_xg_home']} | {away} +{intensite['delta_xg_away']}\n"
-        f"• Nouveaux corners : {intensite['delta_corners']}\n"
+        f"📊 Stats live\n"
+        f"• xG : {stats['xg_home']} - {stats['xg_away']}\n"
+        f"• Tirs en surface : {stats['tirs_surface_home']} - {stats['tirs_surface_away']}\n"
+        f"• Possession : {stats['poss_home']}% - {stats['poss_away']}%\n"
         f"———————————————\n"
         f"💰 Marche conseille : {marche}\n"
         f"📈 Cote actuelle : {cote_info}\n"
@@ -205,11 +303,12 @@ async def envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle):
         "home": home,
         "away": away,
         "ligue": ligue,
-        "buts_au_moment": score_home + score_away
+        "buts_au_moment": score_home + score_away,
+        "score_value": score_value
     }
 
     alertes_envoyees.add(fixture_id)
-    print(f"  VALUE BET: {home} vs {away} — {situation}")
+    print(f"  VALUE BET: {home} vs {away} — {score_value}/100")
 
 async def verifier_resultats():
     a_supprimer = []
@@ -236,6 +335,7 @@ async def verifier_resultats():
                 f"———————————————\n"
                 f"⚽ {data['home']} vs {data['away']}\n"
                 f"🏆 {data['ligue']}\n"
+                f"🎯 Score envoye : {data['score_value']}/100\n"
                 f"———————————————\n"
                 f"📊 {detail}\n"
                 f"———————————————\n"
@@ -282,12 +382,12 @@ async def analyser_matchs():
             if not intensite:
                 continue
 
-            situation = detecter_value_bet(stats, intensite, home, away)
-            if not situation:
+            score_value, raisons = calculer_score_value_bet(stats, intensite, home, away)
+            if score_value < 60:
                 continue
 
             cote_actuelle = get_cotes_live(fixture_id)
-            await envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle)
+            await envoyer_alerte(fixture, stats, intensite, score_value, raisons, cote_actuelle)
             opportunites += 1
 
         except Exception as e:
@@ -298,19 +398,28 @@ async def analyser_matchs():
     await verifier_resultats()
 
 async def main():
-    print("Bot Paris Live Football v14 demarre")
+    print("Bot Paris Live Football v15 demarre")
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                "✅ Bot Paris Live Football v14\n"
+                "✅ Bot Paris Live Football v15\n"
                 "———————————————\n"
                 "🌍 20 championnats selectionnes\n"
                 "⏱ Fenetre : 80e — 92e minute\n"
-                "⚡ Detection par intensite recente\n"
-                "📊 Seuil : 0.2 xG en 2 min\n"
+                "🎯 Systeme de score 7 criteres\n"
+                "📊 Seuil minimum : 60/100\n"
                 "🕐 Actif 12h-23h heure francaise\n"
                 "🏆 Resultats automatiques\n"
+                "———————————————\n"
+                "Criteres analyses :\n"
+                "• xG recent (intensite)\n"
+                "• Tirs dans la surface\n"
+                "• Score serre\n"
+                "• Equipe qui pousse\n"
+                "• Possession dominante\n"
+                "• Corners recents\n"
+                "• Minute critique + subs\n"
                 "———————————————\n"
                 "En surveillance..."
             )
@@ -320,7 +429,7 @@ async def main():
 
     scheduler.add_job(analyser_matchs, "interval", minutes=2)
     scheduler.start()
-    print("Scheduler demarre — 20 ligues actives")
+    print("Scheduler demarre — 7 criteres actifs")
 
     while True:
         await asyncio.sleep(60)
