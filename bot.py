@@ -21,7 +21,8 @@ TIMEZONE_FR = pytz.timezone("Europe/Paris")
 LIGUES_AUTORISEES = [
     61, 39, 40, 140, 141, 135, 78, 79,
     144, 71, 172, 292, 210, 119, 179,
-    103, 88, 94, 113, 203
+    103, 88, 94, 113, 203,
+    307, 136, 364, 17, 106, 283, 235
 ]
 
 def heure_france():
@@ -190,7 +191,7 @@ async def envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle):
         f"———————————————\n"
         f"📋 Situation : {situation}\n"
         f"———————————————\n"
-        f"📊 Intensite des {intensite['delta_minute']} dernieres minutes\n"
+        f"📊 Intensite de la derniere minute\n"
         f"• xG genere : {home} +{intensite['delta_xg_home']} | {away} +{intensite['delta_xg_away']}\n"
         f"• Tirs en surface : +{intensite['delta_tirs_surface']}\n"
         f"• Nouveaux corners : {intensite['delta_corners']}\n"
@@ -307,12 +308,13 @@ async def main():
             text=(
                 "✅ Bot Paris Live Football v16\n"
                 "———————————————\n"
-                "🌍 20 championnats selectionnes\n"
+                "🌍 27 championnats selectionnes\n"
                 "⏱ Fenetre : 75e — 92e minute\n"
-                "⚡ 3 regles simples :\n"
-                "• xG +0.15 en 2 min\n"
-                "• 2+ tirs en surface en 2 min\n"
-                "• 3+ corners en 2 min\n"
+                "⚡ Analyse : toutes les 1 minute\n"
+                "📊 3 regles simples :\n"
+                "• xG +0.15 en 1 min\n"
+                "• 2+ tirs en surface en 1 min\n"
+                "• 3+ corners en 1 min\n"
                 "🕐 Actif 12h-23h heure francaise\n"
                 "🏆 Resultats automatiques\n"
                 "———————————————\n"
@@ -322,9 +324,9 @@ async def main():
     except Exception as e:
         print(f"Erreur demarrage: {e} — bot continue")
 
-    scheduler.add_job(analyser_matchs, "interval", minutes=2)
+    scheduler.add_job(analyser_matchs, "interval", minutes=1)
     scheduler.start()
-    print("Scheduler demarre — 3 regles simples actives")
+    print("Scheduler demarre — analyse toutes les 1 minute")
 
     while True:
         await asyncio.sleep(60)
