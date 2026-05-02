@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytz
 import google.generativeai as genai
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -182,24 +182,26 @@ Fais des recherches web pour vérifier :
 Sois CONCIS et DIRECT."""
 
     else:  # mode détaillé
-        with open('/mnt/user-data/uploads/18_POINTS_ANALYSE_PARIS_SPORTIFS.txt', 'r', encoding='utf-8') as f:
-            guide_18_points = f.read()
-        
-        prompt = f"""Tu es un expert en paris sportifs. Analyse ce match selon LES 18 POINTS du guide fourni.
+        prompt = f"""Tu es un expert en paris sportifs. Analyse ce match de manière TRÈS DÉTAILLÉE.
 
 MATCH : {home} vs {away}
 LIGUE : {ligue}
 DATE : {date_match}
 
-GUIDE D'ANALYSE :
-{guide_18_points}
-
 DONNÉES COLLECTÉES :
 {str(donnees)}
 
-Fais des recherches web approfondies pour compléter ton analyse.
+Fais des recherches web approfondies pour :
+1. Effectif et blessures récentes
+2. Forme des équipes
+3. Confrontations directes
+4. Contexte du match
+5. Compositions probables
+6. Déclarations d'avant-match
+7. Mouvements de cotes suspects
+8. Statistiques avancées
 
-RÉPONDS DE MANIÈRE COMPLÈTE ET STRUCTURÉE selon les 18 points."""
+Donne une analyse COMPLÈTE et STRUCTURÉE avec tous les paris possibles."""
 
     try:
         response = model.generate_content(prompt)
@@ -207,7 +209,7 @@ RÉPONDS DE MANIÈRE COMPLÈTE ET STRUCTURÉE selon les 18 points."""
     except Exception as e:
         return f"Erreur Gemini : {str(e)}"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context):
     """Commande /start"""
     message = (
         "✅ Bot d'Analyse Paris Sportifs v17\n"
@@ -224,7 +226,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Envoie juste : PSG Marseille\n"
         "→ Analyse rapide\n\n"
         "Envoie : PSG Marseille détails\n"
-        "→ Analyse complète 18 points\n\n"
+        "→ Analyse complète\n\n"
         "Envoie : matchs\n"
         "→ Liste des matchs à venir\n"
         "———————————————\n"
@@ -232,7 +234,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(message)
 
-async def liste_matchs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def liste_matchs(update: Update, context):
     """Liste tous les matchs à venir"""
     await update.message.reply_text("🔍 Recherche des matchs à venir...")
     
@@ -263,7 +265,7 @@ async def liste_matchs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(message)
 
-async def analyser_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def analyser_match(update: Update, context):
     """Analyse un match demandé par l'utilisateur"""
     texte = update.message.text.strip()
     
@@ -300,7 +302,7 @@ async def analyser_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ Match non trouvé\n\n"
             f"Aucun match trouvé entre '{equipe1}' et '{equipe2}' dans les 7 prochains jours.\n\n"
-            f"Vérifie l'orthographe ou utilise /matchs pour voir les matchs disponibles."
+            f"Utilise 'matchs' pour voir les matchs disponibles."
         )
         return
     
@@ -322,7 +324,7 @@ async def analyser_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(header + analyse)
 
-async def erreur_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def erreur_handler(update: Update, context):
     """Gère les erreurs"""
     print(f"Erreur : {context.error}")
 
