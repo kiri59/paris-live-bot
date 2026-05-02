@@ -1,336 +1,343 @@
 import os
 import asyncio
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Bot
+import google.generativeai as genai
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-bot = Bot(token=TELEGRAM_TOKEN)
-scheduler = AsyncIOScheduler()
-alertes_envoyees = set()
-snapshots_match = {}
-historique_resultats = {}
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 TIMEZONE_FR = pytz.timezone("Europe/Paris")
 
-LIGUES_AUTORISEES = [
-    61, 39, 40, 140, 141, 135, 78, 79,
-    144, 71, 172, 292, 210, 119, 179,
-    103, 88, 94, 113, 203,
-    307, 136, 364, 17, 106, 283, 235
-]
+LIGUES_PRINCIPALES = [61, 39, 140, 135, 78, 71]
 
 def heure_france():
     return datetime.now(TIMEZONE_FR)
 
-def est_heure_matchs():
-    heure = heure_france().hour
-    return 12 <= heure <= 23
-
-def get_matchs_live():
+def get_matchs_a_venir(jours=7):
+    """Récupère tous les matchs à venir dans les X prochains jours"""
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    params = {"live": "all"}
+    date_debut = heure_france().strftime('%Y-%m-%d')
+    date_fin = (heure_france() + timedelta(days=jours)).strftime('%Y-%m-%d')
+    
+    all_matches = []
+    for league_id in LIGUES_PRINCIPALES:
+        params = {
+            "league": league_id,
+            "season": 2025,
+            "from": date_debut,
+            "to": date_fin
+        }
+        try:
+            r = requests.get(url, headers=headers, params=params, timeout=15)
+            data = r.json().get("response", [])
+            all_matches.extend(data)
+        except:
+            continue
+    
+    return all_matches
+
+def chercher_match(equipe1, equipe2):
+    """Trouve un match entre deux équipes"""
+    matchs = get_matchs_a_venir()
+    
+    equipe1_lower = equipe1.lower()
+    equipe2_lower = equipe2.lower()
+    
+    for match in matchs:
+        home = match["teams"]["home"]["name"].lower()
+        away = match["teams"]["away"]["name"].lower()
+        
+        if (equipe1_lower in home or equipe1_lower in away) and \
+           (equipe2_lower in home or equipe2_lower in away):
+            return match
+    
+    return None
+
+def get_stats_match(fixture_id):
+    """Récupère stats détaillées d'un match"""
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"id": fixture_id}
+    
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        return r.json().get("response", [None])[0]
+    except:
+        return None
+
+def get_h2h(team1_id, team2_id):
+    """Récupère l'historique H2H"""
+    url = "https://v3.football.api-sports.io/fixtures/headtohead"
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"h2h": f"{team1_id}-{team2_id}", "last": 10}
+    
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=15)
         return r.json().get("response", [])
     except:
         return []
 
-def get_match_termine(fixture_id):
+def get_forme_equipe(team_id):
+    """Récupère la forme récente d'une équipe"""
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    params = {"id": fixture_id}
+    date_fin = heure_france().strftime('%Y-%m-%d')
+    date_debut = (heure_france() - timedelta(days=60)).strftime('%Y-%m-%d')
+    params = {
+        "team": team_id,
+        "from": date_debut,
+        "to": date_fin,
+        "last": 10
+    }
+    
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=10)
-        data = r.json().get("response", [])
-        if not data:
-            return None
-        fixture = data[0]
-        status = fixture["fixture"]["status"]["short"]
-        if status in ["FT", "AET", "PEN"]:
-            return {
-                "score_home": fixture["goals"]["home"] or 0,
-                "score_away": fixture["goals"]["away"] or 0,
-            }
-        return None
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        return r.json().get("response", [])
     except:
-        return None
+        return []
 
-def get_cotes_live(fixture_id):
-    url = "https://v3.football.api-sports.io/odds/live"
+def get_cotes_match(fixture_id):
+    """Récupère les cotes du match"""
+    url = "https://v3.football.api-sports.io/odds"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"fixture": fixture_id}
+    
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=10)
-        data = r.json()
-        resultats = data.get("response", [])
-        if not resultats:
-            return None
-        for bookmaker in resultats[0].get("bookmakers", []):
-            for bet in bookmaker.get("bets", []):
-                if "Over/Under" in bet.get("name", ""):
-                    for val in bet.get("values", []):
-                        if val.get("value") == "Over 2.5":
-                            return float(val.get("odd", 0))
-        return None
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        return r.json().get("response", [])
     except:
-        return None
+        return []
 
-def extraire_stats(fixture):
-    try:
-        stats = fixture.get("statistics", [])
-        minute = fixture["fixture"]["status"]["elapsed"] or 0
-        score_home = fixture["goals"]["home"] or 0
-        score_away = fixture["goals"]["away"] or 0
-
-        corners_home = corners_away = 0
-        xg_home = xg_away = 0.0
-        tirs_surface_home = tirs_surface_away = 0
-
-        for team_stats in stats:
-            is_home = team_stats["team"]["id"] == fixture["teams"]["home"]["id"]
-            for s in team_stats["statistics"]:
-                val = s["value"]
-                if val is None:
-                    val = 0
-                try:
-                    val = float(str(val).replace("%", ""))
-                except:
-                    val = 0
-                t = s["type"]
-                if t == "Corner Kicks":
-                    if is_home: corners_home = val
-                    else: corners_away = val
-                elif t in ["expected_goals", "Expected Goals"]:
-                    if is_home: xg_home = val
-                    else: xg_away = val
-                elif t == "Shots insidebox":
-                    if is_home: tirs_surface_home = val
-                    else: tirs_surface_away = val
-
-        return {
-            "minute": minute,
-            "score_home": score_home,
-            "score_away": score_away,
-            "xg_home": round(xg_home, 2),
-            "xg_away": round(xg_away, 2),
-            "xg_total": round(xg_home + xg_away, 2),
-            "corners_total": int(corners_home + corners_away),
-            "tirs_surface_total": int(tirs_surface_home + tirs_surface_away)
-        }
-    except:
-        return None
-
-def calculer_intensite_recente(fixture_id, stats_actuelles):
-    if fixture_id not in snapshots_match:
-        snapshots_match[fixture_id] = stats_actuelles
-        return None
-
-    snapshot = snapshots_match[fixture_id]
-    delta = {
-        "delta_xg_home": round(stats_actuelles["xg_home"] - snapshot["xg_home"], 2),
-        "delta_xg_away": round(stats_actuelles["xg_away"] - snapshot["xg_away"], 2),
-        "delta_xg_total": round(stats_actuelles["xg_total"] - snapshot["xg_total"], 2),
-        "delta_corners": stats_actuelles["corners_total"] - snapshot["corners_total"],
-        "delta_tirs_surface": stats_actuelles["tirs_surface_total"] - snapshot["tirs_surface_total"],
-        "delta_minute": stats_actuelles["minute"] - snapshot["minute"]
+def compiler_donnees_match(match):
+    """Compile toutes les données nécessaires pour l'analyse"""
+    fixture_id = match["fixture"]["id"]
+    home_id = match["teams"]["home"]["id"]
+    away_id = match["teams"]["away"]["id"]
+    
+    print(f"Collecte des données pour {match['teams']['home']['name']} vs {match['teams']['away']['name']}...")
+    
+    stats_detaillees = get_stats_match(fixture_id)
+    h2h = get_h2h(home_id, away_id)
+    forme_home = get_forme_equipe(home_id)
+    forme_away = get_forme_equipe(away_id)
+    cotes = get_cotes_match(fixture_id)
+    
+    return {
+        "match": match,
+        "stats": stats_detaillees,
+        "h2h": h2h,
+        "forme_home": forme_home,
+        "forme_away": forme_away,
+        "cotes": cotes
     }
 
-    snapshots_match[fixture_id] = stats_actuelles
-    return delta
+def analyser_avec_gemini(donnees, mode="rapide"):
+    """Envoie les données à Gemini pour analyse"""
+    
+    match = donnees["match"]
+    home = match["teams"]["home"]["name"]
+    away = match["teams"]["away"]["name"]
+    date_match = match["fixture"]["date"]
+    ligue = match["league"]["name"]
+    
+    if mode == "rapide":
+        prompt = f"""Tu es un expert en paris sportifs. Analyse ce match et donne UNIQUEMENT :
 
-def detecter_alerte(stats, intensite, home, away):
-    if not intensite or intensite["delta_minute"] < 1:
-        return None
+MATCH : {home} vs {away}
+LIGUE : {ligue}
+DATE : {date_match}
 
-    delta_xg_max = max(intensite["delta_xg_home"], intensite["delta_xg_away"])
-    delta_tirs_surface = intensite["delta_tirs_surface"]
-    delta_corners = intensite["delta_corners"]
+DONNÉES DISPONIBLES :
+{str(donnees)}
 
-    # Regle 1 — xG explosif
-    if delta_xg_max >= 0.15:
-        equipe = home if intensite["delta_xg_home"] >= 0.15 else away
-        return f"{equipe} pousse fort (xG +{delta_xg_max} en {intensite['delta_minute']}min)"
+RÉPONDS AU FORMAT SUIVANT (STRICTEMENT) :
 
-    # Regle 2 — Pression cumulee
-    if delta_tirs_surface >= 2:
-        return f"{delta_tirs_surface} tirs en surface en {intensite['delta_minute']}min"
+📊 PARIS CONSEILLÉS
+1. [Type de pari] — Cote [X.XX] — Confiance [X/10]
+2. [Type de pari] — Cote [X.XX] — Confiance [X/10]
 
-    # Regle 3 — Match qui s'emballe
-    if delta_corners >= 3:
-        return f"{delta_corners} corners en {intensite['delta_minute']}min"
+📋 ANALYSE RAPIDE (5-6 lignes maximum)
+[Ton analyse concise]
 
-    return None
+⚠️ POINTS D'ATTENTION (2-3 points maximum)
+- [Point 1]
+- [Point 2]
 
-async def envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle):
-    fixture_id = fixture["fixture"]["id"]
-    home = fixture["teams"]["home"]["name"]
-    away = fixture["teams"]["away"]["name"]
-    minute = stats["minute"]
-    score_home = stats["score_home"]
-    score_away = stats["score_away"]
-    ligue = fixture["league"]["name"]
-    pays = fixture["league"]["country"]
+Fais des recherches web pour vérifier :
+- Compositions probables
+- Blessures récentes
+- Déclarations d'avant-match
+- Mouvement des cotes
 
-    cote_info = f"{cote_actuelle}" if cote_actuelle else "N/A"
-    marche = f"Over {score_home + score_away + 0.5} buts"
-    heure_fr = heure_france().strftime('%H:%M:%S')
+Sois CONCIS et DIRECT."""
 
-    message = (
-        f"⚡ VALUE BET — 1 BUT A VENIR\n"
-        f"———————————————\n"
-        f"⚽ {home} vs {away}\n"
-        f"🕐 {minute}' — Score : {score_home}-{score_away}\n"
-        f"🏆 {ligue} ({pays})\n"
-        f"———————————————\n"
-        f"📋 Situation : {situation}\n"
-        f"———————————————\n"
-        f"📊 Intensite de la derniere minute\n"
-        f"• xG genere : {home} +{intensite['delta_xg_home']} | {away} +{intensite['delta_xg_away']}\n"
-        f"• Tirs en surface : +{intensite['delta_tirs_surface']}\n"
-        f"• Nouveaux corners : {intensite['delta_corners']}\n"
-        f"———————————————\n"
-        f"💰 Marche conseille : {marche}\n"
-        f"📈 Cote actuelle : {cote_info}\n"
-        f"———————————————\n"
-        f"⏰ {heure_fr}"
-    )
+    else:  # mode détaillé
+        with open('/mnt/user-data/uploads/18_POINTS_ANALYSE_PARIS_SPORTIFS.txt', 'r', encoding='utf-8') as f:
+            guide_18_points = f.read()
+        
+        prompt = f"""Tu es un expert en paris sportifs. Analyse ce match selon LES 18 POINTS du guide fourni.
 
-    await bot.send_message(chat_id=CHAT_ID, text=message)
+MATCH : {home} vs {away}
+LIGUE : {ligue}
+DATE : {date_match}
 
-    historique_resultats[fixture_id] = {
-        "home": home,
-        "away": away,
-        "ligue": ligue,
-        "buts_au_moment": score_home + score_away
-    }
+GUIDE D'ANALYSE :
+{guide_18_points}
 
-    alertes_envoyees.add(fixture_id)
-    print(f"  ALERTE: {home} vs {away} — {situation}")
+DONNÉES COLLECTÉES :
+{str(donnees)}
 
-async def verifier_resultats():
-    a_supprimer = []
-    for fixture_id, data in list(historique_resultats.items()):
-        try:
-            resultat = get_match_termine(fixture_id)
-            if resultat is None:
-                continue
-            total_final = resultat["score_home"] + resultat["score_away"]
-            buts_apres = total_final - data["buts_au_moment"]
-            gagnant = buts_apres > 0
+Fais des recherches web approfondies pour compléter ton analyse.
 
-            if gagnant:
-                emoji_r = "✅"
-                verdict = "GAGNANT"
-                detail = f"But marque apres l'alerte — score final {resultat['score_home']}-{resultat['score_away']}"
-            else:
-                emoji_r = "❌"
-                verdict = "PERDANT"
-                detail = f"Aucun but — score final {resultat['score_home']}-{resultat['score_away']}"
+RÉPONDS DE MANIÈRE COMPLÈTE ET STRUCTURÉE selon les 18 points."""
 
-            message = (
-                f"{emoji_r} RESULTAT — {verdict}\n"
-                f"———————————————\n"
-                f"⚽ {data['home']} vs {data['away']}\n"
-                f"🏆 {data['ligue']}\n"
-                f"———————————————\n"
-                f"📊 {detail}\n"
-                f"———————————————\n"
-                f"Match termine"
-            )
-            await bot.send_message(chat_id=CHAT_ID, text=message)
-            a_supprimer.append(fixture_id)
-            print(f"  RESULTAT: {data['home']} vs {data['away']} — {verdict}")
-        except Exception as e:
-            print(f"Erreur resultat: {e}")
-            continue
-    for fixture_id in a_supprimer:
-        if fixture_id in historique_resultats:
-            del historique_resultats[fixture_id]
-
-async def analyser_matchs():
-    if not est_heure_matchs():
-        print(f"[{heure_france().strftime('%H:%M')}] Hors horaire FR — pause")
-        return
-
-    print(f"[{heure_france().strftime('%H:%M:%S')}] Analyse en cours...")
-    matchs = get_matchs_live()
-    matchs_filtres = [m for m in matchs if m["league"]["id"] in LIGUES_AUTORISEES]
-    opportunites = 0
-
-    for fixture in matchs_filtres:
-        try:
-            minute = fixture["fixture"]["status"]["elapsed"]
-            if not minute or minute < 75 or minute > 92:
-                continue
-
-            fixture_id = fixture["fixture"]["id"]
-            if fixture_id in alertes_envoyees:
-                continue
-
-            home = fixture["teams"]["home"]["name"]
-            away = fixture["teams"]["away"]["name"]
-
-            stats = extraire_stats(fixture)
-            if not stats:
-                continue
-
-            intensite = calculer_intensite_recente(fixture_id, stats)
-            if not intensite:
-                continue
-
-            situation = detecter_alerte(stats, intensite, home, away)
-            if not situation:
-                continue
-
-            cote_actuelle = get_cotes_live(fixture_id)
-            await envoyer_alerte(fixture, stats, intensite, situation, cote_actuelle)
-            opportunites += 1
-
-        except Exception as e:
-            print(f"Erreur: {e}")
-            continue
-
-    print(f"  {len(matchs)} matchs live ({len(matchs_filtres)} dans nos ligues) — {opportunites} alertes")
-    await verifier_resultats()
-
-async def main():
-    print("Bot Paris Live Football v16 demarre")
     try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=(
-                "✅ Bot Paris Live Football v16\n"
-                "———————————————\n"
-                "🌍 27 championnats selectionnes\n"
-                "⏱ Fenetre : 75e — 92e minute\n"
-                "⚡ Analyse : toutes les 1 minute\n"
-                "📊 3 regles simples :\n"
-                "• xG +0.15 en 1 min\n"
-                "• 2+ tirs en surface en 1 min\n"
-                "• 3+ corners en 1 min\n"
-                "🕐 Actif 12h-23h heure francaise\n"
-                "🏆 Resultats automatiques\n"
-                "———————————————\n"
-                "En surveillance..."
-            )
-        )
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        print(f"Erreur demarrage: {e} — bot continue")
+        return f"Erreur Gemini : {str(e)}"
 
-    scheduler.add_job(analyser_matchs, "interval", minutes=1)
-    scheduler.start()
-    print("Scheduler demarre — analyse toutes les 1 minute")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Commande /start"""
+    message = (
+        "✅ Bot d'Analyse Paris Sportifs v17\n"
+        "———————————————\n"
+        "🎯 6 championnats couverts :\n"
+        "• Ligue 1\n"
+        "• Premier League\n"
+        "• La Liga\n"
+        "• Serie A\n"
+        "• Bundesliga\n"
+        "• Brasileirão\n"
+        "———————————————\n"
+        "💬 UTILISATION :\n\n"
+        "Envoie juste : PSG Marseille\n"
+        "→ Analyse rapide\n\n"
+        "Envoie : PSG Marseille détails\n"
+        "→ Analyse complète 18 points\n\n"
+        "Envoie : matchs\n"
+        "→ Liste des matchs à venir\n"
+        "———————————————\n"
+        "Prêt à analyser !"
+    )
+    await update.message.reply_text(message)
 
-    while True:
-        await asyncio.sleep(60)
-        print(f"[{heure_france().strftime('%H:%M:%S')}] Bot actif...")
+async def liste_matchs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Liste tous les matchs à venir"""
+    await update.message.reply_text("🔍 Recherche des matchs à venir...")
+    
+    matchs = get_matchs_a_venir(jours=3)
+    
+    if not matchs:
+        await update.message.reply_text("Aucun match trouvé dans les 3 prochains jours.")
+        return
+    
+    # Grouper par date
+    matchs_par_date = {}
+    for match in matchs[:30]:  # Limite à 30 matchs
+        date = match["fixture"]["date"][:10]
+        if date not in matchs_par_date:
+            matchs_par_date[date] = []
+        matchs_par_date[date].append(match)
+    
+    message = "📅 MATCHS À VENIR\n\n"
+    for date, matchs_jour in sorted(matchs_par_date.items())[:3]:
+        message += f"📆 {date}\n"
+        for m in matchs_jour[:10]:
+            heure = m["fixture"]["date"][11:16]
+            home = m["teams"]["home"]["name"]
+            away = m["teams"]["away"]["name"]
+            ligue = m["league"]["name"]
+            message += f"{heure} • {home} vs {away} ({ligue})\n"
+        message += "\n"
+    
+    await update.message.reply_text(message)
+
+async def analyser_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Analyse un match demandé par l'utilisateur"""
+    texte = update.message.text.strip()
+    
+    # Vérifier si c'est la commande "matchs"
+    if texte.lower() == "matchs":
+        await liste_matchs(update, context)
+        return
+    
+    # Déterminer le mode
+    mode = "rapide"
+    if "détails" in texte.lower() or "details" in texte.lower():
+        mode = "détaillé"
+        texte = texte.replace("détails", "").replace("details", "").strip()
+    
+    # Parser les équipes
+    parties = texte.split()
+    if len(parties) < 2:
+        await update.message.reply_text(
+            "❌ Format incorrect\n\n"
+            "Utilise : PSG Marseille\n"
+            "Ou : PSG Marseille détails"
+        )
+        return
+    
+    equipe1 = parties[0]
+    equipe2 = " ".join(parties[1:]) if len(parties) > 2 else parties[1]
+    
+    await update.message.reply_text(f"🔍 Recherche du match {equipe1} vs {equipe2}...")
+    
+    # Chercher le match
+    match = chercher_match(equipe1, equipe2)
+    
+    if not match:
+        await update.message.reply_text(
+            f"❌ Match non trouvé\n\n"
+            f"Aucun match trouvé entre '{equipe1}' et '{equipe2}' dans les 7 prochains jours.\n\n"
+            f"Vérifie l'orthographe ou utilise /matchs pour voir les matchs disponibles."
+        )
+        return
+    
+    # Collecter les données
+    await update.message.reply_text("📊 Collecte des statistiques...")
+    donnees = compiler_donnees_match(match)
+    
+    # Analyser avec Gemini
+    await update.message.reply_text(f"🤖 Analyse {'complète' if mode == 'détaillé' else 'rapide'} en cours...")
+    analyse = analyser_avec_gemini(donnees, mode)
+    
+    # Envoyer le résultat
+    home = match["teams"]["home"]["name"]
+    away = match["teams"]["away"]["name"]
+    date_match = match["fixture"]["date"]
+    ligue = match["league"]["name"]
+    
+    header = f"🏆 {home} vs {away}\n📅 {date_match}\n🎯 {ligue}\n\n"
+    
+    await update.message.reply_text(header + analyse)
+
+async def erreur_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gère les erreurs"""
+    print(f"Erreur : {context.error}")
+
+def main():
+    """Point d'entrée principal"""
+    print("Bot Paris Sportifs v17 avec Gemini - Démarrage...")
+    
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyser_match))
+    application.add_error_handler(erreur_handler)
+    
+    print("Bot prêt et en écoute...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
