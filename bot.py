@@ -339,7 +339,10 @@ def main():
     application.add_error_handler(erreur_handler)
     
     print("Bot prêt et en écoute...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Utiliser run_polling avec stop_signals=None pour Render
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    application.run_polling(drop_pending_updates=True, stop_signals=[])
 
 if __name__ == "__main__":
     main()
